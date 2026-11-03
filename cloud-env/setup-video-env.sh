@@ -6,7 +6,10 @@
 #   - Arabic Noto fonts (Noto Sans / Naskh / Kufi Arabic)
 #   - yt-dlp
 #   - faster-whisper + whisper-ctranslate2 CLI, and the large-v3 model (~3 GB)
-#   - HyperFrames CLI (pinned to the tested version)
+#   - HyperFrames CLI (pinned to the tested version) and its AI skills
+#   - Noto Sans Arabic SemiBold/Bold/ExtraBold/Black (caption weights)
+#   - 3D toolkit: Blender 5.2.3 as a Python module (Cycles), scikit-image, OpenCV
+#     in /opt/video-env/blender, run with `blender-python`
 #   - Proxy settings for Node and Chrome so renders can reach the network
 #
 # Safe to run any number of times. One failing step does not stop the others,
@@ -105,6 +108,61 @@ else
 	$SUDO npm install -g --no-fund --no-audit "hyperframes@$HYPERFRAMES_VERSION" >/dev/null || warn "HyperFrames install failed"
 fi
 
+# 4b. HyperFrames AI skills (into ~/.claude/skills and ~/.agents/skills)
+if ! have hyperframes; then
+	warn "HyperFrames missing; skipping its skills"
+elif [ -f "$HOME/.claude/skills/hyperframes/SKILL.md" ]; then
+	log "HyperFrames skills already installed"
+else
+	log "installing HyperFrames skills"
+	(cd "$HOME" && NODE_USE_ENV_PROXY=1 hyperframes skills >/dev/null 2>&1) || warn "HyperFrames skills install failed"
+fi
+
+# 4c. Extra Noto Sans Arabic weights used by the Reel captions (SemiBold .. Black)
+FONT_DIR="/usr/local/share/fonts/noto-arabic-weights"
+NOTO_URL="https://raw.githubusercontent.com/notofonts/notofonts.github.io/main/fonts/NotoSansArabic/hinted/ttf"
+$SUDO mkdir -p "$FONT_DIR"
+fonts_added=0
+for w in SemiBold Bold ExtraBold Black; do
+	f="$FONT_DIR/NotoSansArabic-$w.ttf"
+	if [ -s "$f" ]; then continue; fi
+	log "downloading Noto Sans Arabic $w"
+	if $SUDO curl -sSfL -m 120 -o "$f" "$NOTO_URL/NotoSansArabic-$w.ttf"; then
+		fonts_added=1
+	else
+		$SUDO rm -f "$f"; warn "could not download Noto Sans Arabic $w"
+	fi
+done
+[ "$fonts_added" -eq 1 ] && $SUDO fc-cache -f >/dev/null 2>&1
+[ "$fonts_added" -eq 0 ] && log "Noto Sans Arabic weights already present"
+
+# 4d. 3D toolkit: Blender as a Python module (Cycles renderer) + scikit-image + OpenCV,
+#     in an isolated environment. Run scripts with: blender-python script.py
+BLENDER_VENV="/opt/video-env/blender"
+BPY_VERSION="5.2.3"
+if [ -x "$BLENDER_VENV/bin/python" ] && "$BLENDER_VENV/bin/python" -c "import bpy, skimage, cv2" >/dev/null 2>&1; then
+	log "Blender $BPY_VERSION toolkit already installed"
+else
+	log "installing Blender $BPY_VERSION toolkit (about 1 minute)"
+	PY313="$(command -v python3.13 || echo /usr/local/bin/python3.13)"
+	$SUDO mkdir -p "$(dirname "$BLENDER_VENV")"
+	if have uv || [ -x "$HOME/.local/bin/uv" ]; then
+		UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+		$SUDO "$UV" venv -q --python "$PY313" "$BLENDER_VENV" &&
+			$SUDO "$UV" pip install -q --python "$BLENDER_VENV/bin/python" "bpy==$BPY_VERSION" scikit-image opencv-python-headless ||
+			warn "Blender toolkit install failed"
+	else
+		$SUDO "$PY313" -m venv "$BLENDER_VENV" &&
+			$SUDO "$BLENDER_VENV/bin/pip" install -q "bpy==$BPY_VERSION" scikit-image opencv-python-headless ||
+			warn "Blender toolkit install failed"
+	fi
+fi
+$SUDO tee /usr/local/bin/blender-python >/dev/null <<EOF
+#!/usr/bin/env bash
+exec "$BLENDER_VENV/bin/python" "\$@"
+EOF
+$SUDO chmod +x /usr/local/bin/blender-python
+
 # 5. Proxy configuration for every new shell.
 #    The proxy address itself is injected by the platform each session; never hard-code it.
 #    Node's built-in fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 (Node >= 22.21).
@@ -159,6 +217,10 @@ v=$(python3 -c 'import faster_whisper; print(faster_whisper.__version__)' 2>/dev
 v=$(yt-dlp --version 2>/dev/null) && ok yt-dlp "$v" || bad yt-dlp ""
 v=$(hyperframes --version 2>/dev/null) && ok Hyperframes "$v" || bad Hyperframes ""
 fc-list :lang=ar family 2>/dev/null | grep -qi "Noto Sans Arabic" && ok "Arabic font" "Noto Sans/Naskh/Kufi Arabic" || bad "Arabic font" ""
+n=$(ls /usr/local/share/fonts/noto-arabic-weights/NotoSansArabic-*.ttf 2>/dev/null | wc -l)
+[ "$n" -eq 4 ] && ok "Font weights" "Noto Sans Arabic SemiBold/Bold/ExtraBold/Black" || bad "Font weights" "$n of 4"
+[ -f "$HOME/.claude/skills/hyperframes/SKILL.md" ] && ok "HF skills" "$(ls "$HOME/.claude/skills" | grep -c .) skills" || bad "HF skills" ""
+v=$(blender-python -c 'import bpy, skimage, cv2; print("Blender", bpy.app.version_string, "| OpenCV", cv2.__version__, "| scikit-image", skimage.__version__)' 2>/dev/null) && ok Blender3D "$v" || bad Blender3D ""
 EOF
 $SUDO chmod +x /usr/local/bin/video-env-check
 
